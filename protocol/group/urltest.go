@@ -213,6 +213,9 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 	if idleTimeout == 0 {
 		idleTimeout = C.DefaultURLTestIdleTimeout
 	}
+	if maxFailed == 0 {
+		maxFailed = 10
+	}
 	if interval > idleTimeout {
 		return nil, E.New("interval must be less or equal than idle_timeout")
 	}
