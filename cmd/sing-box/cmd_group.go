@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/experimental/cachefile"
@@ -46,8 +48,22 @@ func runGroupList() error {
 		return fmt.Errorf("cache file not configured")
 	}
 
+	// Copy cache file to temp to avoid locking issues with running service
+	tempFile, err := os.CreateTemp("", "sing-box-cache-*.db")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+	defer os.Remove(tempPath)
+
+	err = copyFile(cachePath, tempPath)
+	if err != nil {
+		return fmt.Errorf("copy cache file: %w", err)
+	}
+
 	cf := cachefile.New(globalCtx, option.CacheFileOptions{
-		Path: cachePath,
+		Path: tempPath,
 	})
 	err = cf.Start(adapter.StartStateInitialize)
 	if err != nil {
@@ -68,5 +84,33 @@ func runGroupList() error {
 		}
 	}
 
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	sourceFileStat, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	if _, err := io.Copy(destination, source); err != nil {
+		return err
+	}
 	return nil
 }
