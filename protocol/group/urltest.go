@@ -44,6 +44,7 @@ type URLTest struct {
 	idleTimeout                  time.Duration
 	group                        *URLTestGroup
 	interruptExternalConnections bool
+	maxFailed                    int
 }
 
 func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.URLTestOutboundOptions) (adapter.Outbound, error) {
@@ -60,6 +61,7 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		tolerance:                    options.Tolerance,
 		idleTimeout:                  time.Duration(options.IdleTimeout),
 		interruptExternalConnections: options.InterruptExistConnections,
+		maxFailed:                    options.MaxFailed,
 	}
 	if len(outbound.tags) == 0 {
 		return nil, E.New("missing tags")
@@ -76,7 +78,7 @@ func (s *URLTest) Start() error {
 		}
 		outbounds = append(outbounds, detour)
 	}
-	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.interruptExternalConnections)
+	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.interruptExternalConnections, s.maxFailed)
 	if err != nil {
 		return err
 	}
@@ -135,10 +137,12 @@ func (s *URLTest) DialContext(ctx context.Context, network string, destination M
 	}
 	conn, err := outbound.DialContext(ctx, network, destination)
 	if err == nil {
+		s.group.ResetFailure(RealTag(outbound))
 		return s.group.interruptGroup.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
 	}
 	s.logger.ErrorContext(ctx, err)
 	s.group.history.DeleteURLTestHistory(outbound.Tag())
+	s.group.IncFailure(RealTag(outbound))
 	return nil, err
 }
 
@@ -153,10 +157,12 @@ func (s *URLTest) ListenPacket(ctx context.Context, destination M.Socksaddr) (ne
 	}
 	conn, err := outbound.ListenPacket(ctx, destination)
 	if err == nil {
+		s.group.ResetFailure(RealTag(outbound))
 		return s.group.interruptGroup.NewPacketConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
 	}
 	s.logger.ErrorContext(ctx, err)
 	s.group.history.DeleteURLTestHistory(outbound.Tag())
+	s.group.IncFailure(RealTag(outbound))
 	return nil, err
 }
 
@@ -188,6 +194,8 @@ type URLTestGroup struct {
 	selectedOutboundUDP          adapter.Outbound
 	interruptGroup               *interrupt.Group
 	interruptExternalConnections bool
+	maxFailed                    int
+	failureCount                 map[string]*atomic.Int32
 	access                       sync.Mutex
 	ticker                       *time.Ticker
 	close                        chan struct{}
@@ -195,7 +203,7 @@ type URLTestGroup struct {
 	lastActive                   common.TypedValue[time.Time]
 }
 
-func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, interruptExternalConnections bool) (*URLTestGroup, error) {
+func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, interruptExternalConnections bool, maxFailed int) (*URLTestGroup, error) {
 	if interval == 0 {
 		interval = C.DefaultURLTestInterval
 	}
@@ -230,6 +238,8 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 		pause:                        service.FromContext[pause.Manager](ctx),
 		interruptGroup:               interrupt.NewGroup(),
 		interruptExternalConnections: interruptExternalConnections,
+		maxFailed:                    maxFailed,
+		failureCount:                 make(map[string]*atomic.Int32),
 	}, nil
 }
 
@@ -266,6 +276,36 @@ func (g *URLTestGroup) Close() error {
 	g.pause.UnregisterCallback(g.pauseCallback)
 	close(g.close)
 	return nil
+}
+
+func (g *URLTestGroup) IncFailure(tag string) {
+	if g.maxFailed <= 0 {
+		return
+	}
+	g.access.Lock()
+	counter, ok := g.failureCount[tag]
+	if !ok {
+		counter = new(atomic.Int32)
+		g.failureCount[tag] = counter
+	}
+	g.access.Unlock()
+	if counter.Add(1) >= int32(g.maxFailed) {
+		counter.Store(0)
+		g.logger.Info("outbound ", tag, " reached max failures, triggering URL test")
+		go g.CheckOutbounds(true)
+	}
+}
+
+func (g *URLTestGroup) ResetFailure(tag string) {
+	if g.maxFailed <= 0 {
+		return
+	}
+	g.access.Lock()
+	counter, ok := g.failureCount[tag]
+	if ok {
+		counter.Store(0)
+	}
+	g.access.Unlock()
 }
 
 func (g *URLTestGroup) Select(network string) (adapter.Outbound, bool) {
