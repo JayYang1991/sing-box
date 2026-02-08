@@ -78,7 +78,7 @@ func (s *URLTest) Start() error {
 		}
 		outbounds = append(outbounds, detour)
 	}
-	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, s.Tag(), outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.interruptExternalConnections, s.maxFailed)
+	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.interruptExternalConnections, s.maxFailed)
 	if err != nil {
 		return err
 	}
@@ -197,15 +197,13 @@ type URLTestGroup struct {
 	maxFailed                    int
 	failureCount                 map[string]*atomic.Int32
 	access                       sync.Mutex
-	tag                          string
 	ticker                       *time.Ticker
 	close                        chan struct{}
 	started                      bool
 	lastActive                   common.TypedValue[time.Time]
-	cacheFile                    adapter.CacheFile
 }
 
-func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, tag string, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, interruptExternalConnections bool, maxFailed int) (*URLTestGroup, error) {
+func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManager, logger log.Logger, outbounds []adapter.Outbound, link string, interval time.Duration, tolerance uint16, idleTimeout time.Duration, interruptExternalConnections bool, maxFailed int) (*URLTestGroup, error) {
 	if interval == 0 {
 		interval = C.DefaultURLTestInterval
 	}
@@ -245,8 +243,6 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 		interruptExternalConnections: interruptExternalConnections,
 		maxFailed:                    maxFailed,
 		failureCount:                 make(map[string]*atomic.Int32),
-		cacheFile:                    service.FromContext[adapter.CacheFile](ctx),
-		tag:                          tag,
 	}, nil
 }
 
@@ -255,27 +251,11 @@ func (g *URLTestGroup) PostStart() {
 	defer g.access.Unlock()
 	g.started = true
 	g.lastActive.Store(time.Now())
-	if g.cacheFile != nil {
-		tag := g.Tag()
-		if tag != "" {
-			selected := g.cacheFile.LoadSelected(tag)
-			if selected != "" {
-				if detour, loaded := g.outbound.Outbound(selected); loaded {
-					if common.Contains(detour.Network(), N.NetworkTCP) {
-						g.selectedOutboundTCP = detour
-					}
-					if common.Contains(detour.Network(), N.NetworkUDP) {
-						g.selectedOutboundUDP = detour
-					}
-				}
-			}
-		}
-	}
 	go g.CheckOutbounds(false)
 }
 
 func (g *URLTestGroup) Tag() string {
-	return g.tag
+	return ""
 }
 
 func (g *URLTestGroup) Touch() {
@@ -481,20 +461,6 @@ func (g *URLTestGroup) performUpdateCheck() {
 		}
 		if g.selectedOutboundUDP != nil {
 			g.logger.Warn("selected outbound (UDP): ", g.selectedOutboundUDP.Tag())
-		}
-		if g.cacheFile != nil {
-			tag := g.Tag()
-			if tag != "" {
-				var selectedTag string
-				if g.selectedOutboundTCP != nil {
-					selectedTag = g.selectedOutboundTCP.Tag()
-				} else if g.selectedOutboundUDP != nil {
-					selectedTag = g.selectedOutboundUDP.Tag()
-				}
-				if selectedTag != "" {
-					g.cacheFile.StoreSelected(tag, selectedTag)
-				}
-			}
 		}
 	}
 }

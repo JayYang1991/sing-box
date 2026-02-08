@@ -26,15 +26,7 @@ A new configuration option `max_failed` is added to `urltest` outbound groups.
 - **Default**: 10 (if not specified).
 - **Log Level**: Warnings are logged when the threshold is reached or when a selection change occurs.
 
-### 2. Group Management CLI
-Added a new command to query the currently selected node in proxy groups.
-- **Requirement**: `experimental.cache_file` must be configured in your `config.json`.
-- **Usage**:
-  ```bash
-  sing-box group list -c /path/to/config.json
-  ```
-
-### 3. Enhanced Logging
+### 2. Enhanced Logging
 Path switching and selection changes are now logged at the `warning` level for better visibility.
 
 ## License
